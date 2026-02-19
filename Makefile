@@ -10,7 +10,7 @@ build:
 
 .PHONY: run
 run:
-	go run ./cmd/api
+	go run ./cmd/api --serve
 
 .PHONY: generate
 generate:
@@ -35,4 +35,3 @@ docker-build:
 .PHONY: docker-run
 docker-run:
 	docker run --rm -p 8080:8080 --env-file ./.env $(APP_NAME):local
-

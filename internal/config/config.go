@@ -44,9 +44,6 @@ func Load() (Config, error) {
 	if c.JWTAccessSecret == "" || c.JWTRefreshSecret == "" {
 		return Config{}, fmt.Errorf("JWT_ACCESS_SECRET and JWT_REFRESH_SECRET are required")
 	}
-	if c.OpenAIAPIKey == "" {
-		return Config{}, fmt.Errorf("OPENAI_API_KEY is required")
-	}
 	return c, nil
 }
 

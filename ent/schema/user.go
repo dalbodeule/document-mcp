@@ -19,7 +19,8 @@ func (User) Fields() []ent.Field {
 	return []ent.Field{
 		field.UUID("id", uuid.UUID{}).Default(uuid.New),
 		field.String("email").NotEmpty().MaxLen(320),
-		field.String("password_hash").Sensitive().NotEmpty(),
+		// Store password hash as TEXT to avoid length issues when changing algorithms.
+		field.Text("password_hash").Sensitive().NotEmpty(),
 		field.String("name").NotEmpty().MaxLen(100),
 		field.Time("created_at").Default(time.Now).Immutable(),
 		field.Time("updated_at").Default(time.Now).UpdateDefault(time.Now),

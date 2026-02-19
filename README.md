@@ -49,7 +49,7 @@ CREATE DATABASE document_mcp;
 ## 실행
 
 ```bash
-go run ./cmd/api
+go run ./cmd/api --serve
 ```
 
 기본 주소는 `HTTP_ADDR`(기본 `:8080`) 입니다.
@@ -59,6 +59,31 @@ go run ./cmd/api
 ```bash
 curl localhost:8080/health
 ```
+
+Swagger UI:
+
+- `http://localhost:8080/swagger/`
+- OpenAPI JSON: `http://localhost:8080/openapi.json`
+
+## 최초 계정 설정(커맨드)
+
+서버 실행 없이 **최초 유저를 생성/갱신**할 수 있습니다(멱등).
+
+```bash
+go run ./cmd/api --init-user \
+  --email a@example.com \
+  --password 'password123!' \
+  --name Alice \
+  --group team-security
+```
+
+초기화 후 서버까지 같이 실행하려면 `--serve`를 함께 지정합니다.
+
+```bash
+go run ./cmd/api --init-user --email a@example.com --password 'password123!' --name Alice --serve
+```
+
+주의: `--init-user`는 OpenAI 키가 없어도 동작하지만, `--serve`는 문서 생성/검색 시 임베딩 호출을 위해 `OPENAI_API_KEY`가 필요합니다.
 
 ## API 요약
 

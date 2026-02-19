@@ -11,6 +11,7 @@ import (
 	"document-mdp/internal/service/search"
 
 	"github.com/gin-gonic/gin"
+	swgui "github.com/swaggest/swgui/v5"
 )
 
 type Dependencies struct {
@@ -35,6 +36,12 @@ func NewRouter(deps Dependencies) http.Handler {
 	r.GET("/health", func(c *gin.Context) {
 		c.JSON(200, gin.H{"ok": true})
 	})
+
+	r.GET("/openapi.json", func(c *gin.Context) {
+		c.Data(200, "application/json; charset=utf-8", OpenAPISpecJSON())
+	})
+
+	r.GET("/swagger/*any", gin.WrapH(swgui.New("document-mcp API", "/openapi.json", "/swagger")))
 
 	a := newAuthHandler(deps)
 	d := newDocumentHandler(deps)

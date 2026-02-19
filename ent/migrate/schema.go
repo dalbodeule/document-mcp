@@ -226,7 +226,7 @@ var (
 	UsersColumns = []*schema.Column{
 		{Name: "id", Type: field.TypeUUID},
 		{Name: "email", Type: field.TypeString, Size: 320},
-		{Name: "password_hash", Type: field.TypeString},
+		{Name: "password_hash", Type: field.TypeString, Size: 2147483647},
 		{Name: "name", Type: field.TypeString, Size: 100},
 		{Name: "created_at", Type: field.TypeTime},
 		{Name: "updated_at", Type: field.TypeTime},

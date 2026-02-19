@@ -2,9 +2,15 @@ package auth
 
 import (
 	"context"
+	"crypto/rand"
 	"crypto/sha256"
+	"crypto/subtle"
+	"encoding/base64"
 	"encoding/hex"
 	"fmt"
+	"hash"
+	"strconv"
+	"strings"
 	"time"
 
 	"document-mdp/ent"
@@ -18,6 +24,7 @@ import (
 	"github.com/golang-jwt/jwt/v5"
 	"github.com/google/uuid"
 	"golang.org/x/crypto/bcrypt"
+	"golang.org/x/crypto/pbkdf2"
 )
 
 type Service struct {
@@ -49,13 +56,13 @@ type RefreshClaims struct {
 }
 
 func (s *Service) Register(ctx context.Context, email, password, name string) (*ent.User, error) {
-	hash, err := bcrypt.GenerateFromPassword([]byte(password), bcrypt.DefaultCost)
+	hash, err := hashPasswordPBKDF2(password)
 	if err != nil {
 		return nil, fmt.Errorf("hash password: %w", err)
 	}
 	u, err := s.ent.User.Create().
 		SetEmail(email).
-		SetPasswordHash(string(hash)).
+		SetPasswordHash(hash).
 		SetName(name).
 		Save(ctx)
 	if err != nil {
@@ -69,8 +76,16 @@ func (s *Service) Login(ctx context.Context, email, password, userAgent, ip stri
 	if err != nil {
 		return Tokens{}, fmt.Errorf("invalid credentials")
 	}
-	if err := bcrypt.CompareHashAndPassword([]byte(u.PasswordHash), []byte(password)); err != nil {
+	ok, needsUpgrade, err := verifyPassword(u.PasswordHash, password)
+	if err != nil || !ok {
 		return Tokens{}, fmt.Errorf("invalid credentials")
+	}
+	if needsUpgrade {
+		// Opportunistic upgrade: bcrypt -> pbkdf2.
+		newHash, err := hashPasswordPBKDF2(password)
+		if err == nil {
+			_, _ = s.ent.User.UpdateOneID(u.ID).SetPasswordHash(newHash).Save(ctx)
+		}
 	}
 	return s.issueTokens(ctx, u.ID, userAgent, ip)
 }
@@ -337,6 +352,107 @@ func (s *Service) SetDocumentACL(ctx context.Context, documentID, groupID uuid.U
 
 func (s *Service) CreateGroup(ctx context.Context, name string) (*ent.Group, error) {
 	return s.ent.Group.Create().SetName(name).Save(ctx)
+}
+
+// EnsureGroup creates a group if not exists.
+func (s *Service) EnsureGroup(ctx context.Context, name string) (*ent.Group, bool, error) {
+	g, err := s.ent.Group.Query().Where(group.NameEQ(name)).Only(ctx)
+	if err == nil {
+		return g, false, nil
+	}
+	g, err = s.ent.Group.Create().SetName(name).Save(ctx)
+	if err != nil {
+		return nil, false, err
+	}
+	return g, true, nil
+}
+
+// EnsureUser creates a user if not exists; if exists it updates password+name.
+func (s *Service) EnsureUser(ctx context.Context, email, password, name string) (*ent.User, bool, error) {
+	u, err := s.ent.User.Query().Where(user.EmailEQ(email)).Only(ctx)
+	created := false
+	if err != nil {
+		hash, err := hashPasswordPBKDF2(password)
+		if err != nil {
+			return nil, false, err
+		}
+		u, err = s.ent.User.Create().SetEmail(email).SetPasswordHash(hash).SetName(name).Save(ctx)
+		if err != nil {
+			return nil, false, err
+		}
+		created = true
+		return u, created, nil
+	}
+
+	hash, err := hashPasswordPBKDF2(password)
+	if err != nil {
+		return nil, false, err
+	}
+	u, err = s.ent.User.UpdateOneID(u.ID).SetPasswordHash(hash).SetName(name).Save(ctx)
+	if err != nil {
+		return nil, false, err
+	}
+	return u, created, nil
+}
+
+// --- Password hashing (PBKDF2) ---
+
+// Format: pbkdf2_sha256$<iterations>$<salt_b64raw>$<dk_b64raw>
+const (
+	pbkdf2Prefix     = "pbkdf2_sha256"
+	pbkdf2Iterations = 310000
+	pbkdf2SaltLen    = 16
+	pbkdf2KeyLen     = 32
+)
+
+func hashPasswordPBKDF2(password string) (string, error) {
+	salt := make([]byte, pbkdf2SaltLen)
+	if _, err := rand.Read(salt); err != nil {
+		return "", fmt.Errorf("rand salt: %w", err)
+	}
+	dk := pbkdf2.Key([]byte(password), salt, pbkdf2Iterations, pbkdf2KeyLen, func() hash.Hash { return sha256.New() })
+	saltB64 := base64.RawStdEncoding.EncodeToString(salt)
+	dkB64 := base64.RawStdEncoding.EncodeToString(dk)
+	return fmt.Sprintf("%s$%d$%s$%s", pbkdf2Prefix, pbkdf2Iterations, saltB64, dkB64), nil
+}
+
+func verifyPassword(storedHash string, password string) (ok bool, needsUpgrade bool, err error) {
+	// Legacy bcrypt support (optional): upgrade to pbkdf2 on successful login.
+	if strings.HasPrefix(storedHash, "$2a$") || strings.HasPrefix(storedHash, "$2b$") || strings.HasPrefix(storedHash, "$2y$") {
+		err := bcrypt.CompareHashAndPassword([]byte(storedHash), []byte(password))
+		if err != nil {
+			return false, false, err
+		}
+		return true, true, nil
+	}
+
+	parts := strings.Split(storedHash, "$")
+	if len(parts) != 4 || parts[0] != pbkdf2Prefix {
+		return false, false, fmt.Errorf("unknown password hash format")
+	}
+	iter, err := strconv.Atoi(parts[1])
+	if err != nil || iter <= 0 {
+		return false, false, fmt.Errorf("invalid iterations")
+	}
+	salt, err := base64.RawStdEncoding.DecodeString(parts[2])
+	if err != nil {
+		return false, false, fmt.Errorf("invalid salt")
+	}
+	expected, err := base64.RawStdEncoding.DecodeString(parts[3])
+	if err != nil {
+		return false, false, fmt.Errorf("invalid hash")
+	}
+
+	dk := pbkdf2.Key([]byte(password), salt, iter, len(expected), func() hash.Hash { return sha256.New() })
+	if subtle.ConstantTimeCompare(dk, expected) != 1 {
+		return false, false, nil
+	}
+
+	// Upgrade if iterations drift from our current default.
+	if iter != pbkdf2Iterations {
+		return true, true, nil
+	}
+	return true, false, nil
 }
 
 func (s *Service) AddUserToGroup(ctx context.Context, userID, groupID uuid.UUID) error {
